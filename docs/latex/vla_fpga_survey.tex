@@ -8,6 +8,7 @@
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs,tabularx,multirow,longtable,array}
 \usepackage{graphicx}
+\graphicspath{{figures/}}
 \usepackage{xcolor}
 \usepackage{caption}
 \usepackage{enumitem}
@@ -31,6 +32,10 @@
 \newcommand{\tD}{\textsf{[派生]}}           % 本文由简报数字直接算术得到
 \newcommand{\tE}{\textsf{[估算]}}           % 本文依据公开模型结构所作量级估计
 \newcommand{\pizero}{$\pi_0$}
+% 摘录图注：原图来自所引文献的官方代码库或项目页，来源与许可证见 figures/SOURCES.md
+\newcommand{\figsrc}[1]{（图片摘录自文献~\cite{#1} 的官方代码库或项目页，未作修改；来源与许可证见 \texttt{figures/SOURCES.md}。）}
+% 平台标注
+\newcommand{\hw}[1]{\textsf{【平台：#1】}}
 \newcommand{\pihalf}{$\pi_{0.5}$}
 
 \title{\textbf{视觉-语言-动作模型在 FPGA 上的部署：\\研究综述与一个端到端实现的案例分析}}
@@ -67,7 +72,7 @@ Vision-Language-Action (VLA) models couple large pretrained vision-language mode
 \tM{} 为简报中的板上实测或周期精确 RTL 仿真结果；\tP{} 为简报中的模型预测；\tMsim{} 与 \tMsw{} 为简报原样保留的 RTL 仿真实测与软件模拟实测；
 \tD{} 为本文由简报数字直接做算术得到的量，算式随文给出，不是新的测量；
 \tE{} 为本文依据公开模型结构所作的量级估计，不属于本项目的结果。
-文献中的数字均取自对应文献的摘要级信息并附引用。文献核实状态见附录~\ref{app:verify}。}}
+文献中的数字均取自对应文献的摘要级信息、官方代码库说明或检索到的论文正文，并附引用。每项被讨论的工作都以 \hw{…} 标注其实验或部署所用的硬件平台（含对照平台）；平台信息的出处在第~\ref{sec:platforms} 节的汇总表中逐条注明。文中的摘录图片均取自所引文献的官方代码库或项目页，图注注明出处。文献核实状态见附录~\ref{app:verify}。}}
 
 \tableofcontents
 \newpage
@@ -92,7 +97,7 @@ FPGA 之所以值得在 VLA 部署问题上被认真考虑，有三方面原因�
   \item 以一个在单片 Achronix Speedster7t AC7t1500 上端到端运行 \pizero{} 的实现为案例，解析其架构、数值方案、编译器与实测结果，对照文献定位其创新与差距（第~\ref{sec:case} 节），并提出后续研究路线（第~\ref{sec:future} 节）。
 \end{enumerate}
 
-图~\ref{fig:taxonomy} 给出本文的组织结构与分类框架。第~\ref{sec:bg} 节介绍 Transformer 推理、屋顶线模型与 FPGA 体系结构的基础知识；第~\ref{sec:vla} 至第~\ref{sec:robot} 节为综述主体；第~\ref{sec:method} 节为方法论分析；第~\ref{sec:eval} 节讨论 VLA 加速器的评测方法学；第~\ref{sec:case} 节为案例研究；第~\ref{sec:future} 节讨论开放问题与研究方向；第~\ref{sec:concl} 节总结全文。
+图~\ref{fig:taxonomy} 给出本文的组织结构与分类框架。第~\ref{sec:bg} 节介绍 Transformer 推理、屋顶线模型与 FPGA 体系结构的基础知识；第~\ref{sec:vla} 至第~\ref{sec:robot} 节为综述主体，第~\ref{sec:platforms} 节汇总所讨论工作的硬件平台；第~\ref{sec:method} 节为方法论分析；第~\ref{sec:eval} 节讨论 VLA 加速器的评测方法学；第~\ref{sec:case} 节为案例研究；第~\ref{sec:future} 节讨论开放问题与研究方向；第~\ref{sec:concl} 节总结全文。
 
 \begin{figure}[t]
 \centering
@@ -128,7 +133,15 @@ Transformer~\cite{transformer} 的每一层由多头自注意力与前馈网络�
   \item \textbf{逐元素与归约算子}：LayerNorm/RMSNorm、softmax、GELU/GeGLU 等激活、旋转位置编码（RoPE）、残差相加，以及量化方案引入的求尺度、量化、反量化。它们的 MAC 数可以忽略，但访存与计算比接近 1，并且位于 GEMM 之间的关键路径上。
 \end{itemize}
 
-LLM 推理通常分为两个阶段。\emph{预填充}（prefill）阶段并行处理整个提示序列，GEMM 的行数 $M$ 等于序列长度，属于算力受限；\emph{解码}（decode）阶段每步只处理一个新 token，$M=1$，每一步都要把全部权重读一遍，属于带宽受限。为了避免在解码时重复计算历史 token 的键和值，推理系统会缓存它们，即 KV cache。vLLM~\cite{vllm} 用分页管理 KV cache 以减少碎片；FlashAttention~\cite{flashattn} 用分块把注意力的中间结果留在片上 SRAM，减少对 GPU 高带宽内存的读写。这两项工作分别代表了 LLM 推理中“存储管理”与“算子 IO 感知”两类核心优化，后文会反复与之对照。
+LLM 推理通常分为两个阶段。\emph{预填充}（prefill）阶段并行处理整个提示序列，GEMM 的行数 $M$ 等于序列长度，属于算力受限；\emph{解码}（decode）阶段每步只处理一个新 token，$M=1$，每一步都要把全部权重读一遍，属于带宽受限。为了避免在解码时重复计算历史 token 的键和值，推理系统会缓存它们，即 KV cache。vLLM~\cite{vllm} 用分页管理 KV cache 以减少碎片；FlashAttention~\cite{flashattn} 用分块把注意力的中间结果留在片上 SRAM，减少对 GPU 高带宽内存的读写。这两项工作分别代表了 LLM 推理中“存储管理”与“算子 IO 感知”两类核心优化，后文会反复与之对照。 FlashAttention 的原文以 NVIDIA A100 为例给出了 GPU 存储层次的带宽与容量，并以 GPT-2 注意力为例对比了融合前后的时间构成（图~\ref{fig:flashattn}）\hw{NVIDIA A100 GPU（图中存储层次数据）}。
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/flashattention_overview.jpg}
+\caption{FlashAttention 的存储层次、分块计算与 GPT-2 注意力时间对比。左：GPU 片上 SRAM、HBM 与主机 DRAM 的带宽与容量；中：外循环/内循环分块，把分块拷入 SRAM 计算后写回 HBM；右：PyTorch 实现与融合 kernel 的时间构成。\figsrc{flashattn}}
+\label{fig:flashattn}
+\end{figure}
+
 
 \subsection{屋顶线模型与算术强度}
 
@@ -200,11 +213,39 @@ AMD Alveo U280（DFX、FlightLLM 等所用） & DSP 硬核 & — & HBM \\
 
 VLA 的发展可以大致分为三个阶段。
 
-\textbf{第一阶段：机器人 Transformer。} RT-1~\cite{rt1} 以 FiLM 条件化的 EfficientNet、TokenLearner 与 Transformer 组成策略网络，输入图像与自然语言指令，输出离散化的底盘与机械臂动作。其规模仅 3,500 万参数，能以约 3~Hz 运行，并在大规模真实环境训练与评测中展现了良好的泛化性。同一时期，ACT~\cite{act} 在低成本双臂平台 ALOHA 上提出了“动作分块”（action chunking）：策略一次预测未来一段动作序列而不是单步动作，从而减轻复合误差并提升时间一致性。Diffusion Policy~\cite{diffpolicy} 则把视觉运动策略表示为动作空间中的条件去噪扩散过程，能够自然地表达多峰动作分布，并引入滚动时域执行。这三项工作分别奠定了后续 VLA 的三个基本要素：Transformer 骨干、动作分块与生成式动作头。
+\textbf{第一阶段：机器人 Transformer。} RT-1~\cite{rt1} 以 FiLM 条件化的 EfficientNet、TokenLearner 与 Transformer 组成策略网络，输入图像与自然语言指令，输出离散化的底盘与机械臂动作。其规模仅 3,500 万参数，能以约 3~Hz 运行，并在大规模真实环境训练与评测中展现了良好的泛化性\hw{真实机器人闭环，约 3~Hz；具体机器人型号本文未从可用来源读到}。同一时期，ACT~\cite{act} 在低成本双臂平台 ALOHA 上\hw{ALOHA 低成本双臂遥操作平台}提出了“动作分块”（action chunking）：策略一次预测未来一段动作序列而不是单步动作，从而减轻复合误差并提升时间一致性。Diffusion Policy~\cite{diffpolicy} 则把视觉运动策略表示为动作空间中的条件去噪扩散过程，能够自然地表达多峰动作分布，并引入滚动时域执行。这三项工作分别奠定了后续 VLA 的三个基本要素：Transformer 骨干、动作分块与生成式动作头。
 
-\textbf{第二阶段：以 VLM 为骨干的 VLA。} RT-2~\cite{rt2} 首次把大规模预训练 VLM 直接用作机器人策略，把动作离散化为文本 token，与互联网规模的视觉-语言数据共同微调，使机器人获得了对未见物体与语义指令的泛化能力。Open X-Embodiment~\cite{oxe} 提供了标准化格式的跨形态数据集与 RT-X 模型，为后续开放模型的训练奠定了数据基础。Octo~\cite{octo} 是基于 Transformer 的开放通用策略，用扩散解码输出动作，在约 80 万条轨迹上预训练，有 2,700 万与 9,300 万参数两个规模。OpenVLA~\cite{openvla} 是一个 70 亿参数的开放 VLA，以 Llama 2 为语言骨干、融合 DINOv2 与 SigLIP 视觉特征，在约 97 万条真实示教上训练，沿用了 RT-2 的离散动作 token 路线。
+\textbf{第二阶段：以 VLM 为骨干的 VLA。} RT-2~\cite{rt2} 首次把大规模预训练 VLM 直接用作机器人策略，把动作离散化为文本 token，与互联网规模的视觉-语言数据共同微调，使机器人获得了对未见物体与语义指令的泛化能力。据检索到的论文正文，其 550 亿参数版本无法直接在机器人端常用的 GPU 上运行，而是部署在多 TPU 的云端服务上、由机器人经网络查询，控制频率约 1 至 3~Hz；50 亿参数版本约 5~Hz\hw{多 TPU 云端推理服务，经网络查询}。Open X-Embodiment~\cite{oxe} 提供了标准化格式的跨形态数据集与 RT-X 模型，覆盖 22 种机器人形态、逾百万条真实轨迹（图~\ref{fig:oxe}），为后续开放模型的训练奠定了数据基础\hw{22 种机器人形态，从单臂、双臂到四足}。Octo~\cite{octo} 是基于 Transformer 的开放通用策略，用扩散解码输出动作，在约 80 万条轨迹上预训练，有 2,700 万与 9,300 万参数两个规模（图~\ref{fig:octo}）。据其论文，预训练在 TPU 上完成，在单块 24~GB 显存的 GPU 上微调约需 5 小时，实验机器人包括 WidowX、UR5 与 Franka 等\hw{训练：TPU；微调：单块 24~GB GPU；机器人：WidowX、UR5、Franka 等 9 种平台}。OpenVLA~\cite{openvla} 是一个 70 亿参数的开放 VLA，以 Llama 2 为语言骨干、融合 DINOv2 与 SigLIP 视觉特征，在约 97 万条真实示教上训练，沿用了 RT-2 的离散动作 token 路线。官方代码库给出的 LoRA 微调配置为单块 80~GB 显存的 A100；在 A100 上其动作生成吞吐约 4.2~Hz、时延约 0.240~s（图~\ref{fig:oftefficiency}）\hw{微调：A100 80~GB；推理：A100}。
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.78\textwidth]{figures/oxe_teaser.jpg}
+\caption{Open X-Embodiment 数据集涵盖的部分机器人与场景。\figsrc{oxe}}
+\label{fig:oxe}
+\end{figure}
 
-\textbf{第三阶段：VLM 骨干 + 连续动作生成。} \pizero~\cite{pi0} 在 PaliGemma~\cite{paligemma} VLM 上增加一个参数独立的“动作专家”，以流匹配~\cite{flowmatching} 方式生成连续动作块，在多种机器人平台的复杂灵巧任务上取得了当时领先的结果。\pihalf~\cite{pi05} 在 \pizero{} 基础上引入多来源异构数据的协同训练与高层语义子任务预测，能在未见过的家庭环境中执行 10 至 15 分钟的长程任务。FAST~\cite{fast} 用基于离散余弦变换的压缩分词重新激活了自回归路线，使其能处理高频灵巧任务。GR00T N1~\cite{gr00t} 采用“双系统”结构：VLM 模块（System 2）负责理解，扩散 Transformer 模块（System 1）负责生成动作，二者端到端联合训练。RDT-1B~\cite{rdt} 把基于扩散的机器人基础模型扩展到 12 亿参数，并提出物理可解释的统一动作空间。SmolVLA~\cite{smolvla} 则反向而行，把整套方案压缩到约 4.5 亿参数，面向消费级 GPU 乃至 CPU 部署。
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/octo_arch.jpg}
+\caption{Octo 的模型结构。任务 token（语言编码器）与观测 token（CNN 图像分块）输入 Octo Transformer，经读出（readout）token 连接动作头；微调时可添加新的观测输入与新的动作头。\figsrc{octo}}
+\label{fig:octo}
+\end{figure}
+
+
+\textbf{第三阶段：VLM 骨干 + 连续动作生成。} \pizero~\cite{pi0} 在 PaliGemma~\cite{paligemma} VLM 上增加一个参数独立的“动作专家”，以流匹配~\cite{flowmatching} 方式生成连续动作块，在多种机器人平台的复杂灵巧任务上取得了当时领先的结果。其官方代码库 openpi 给出的推理需求为显存 8~GB 以上（示例 GPU 为 RTX 4090），全参数微调需要 A100（80~GB）或 H100，并提供针对 ALOHA 与 DROID 平台的微调检查点\hw{推理：RTX 4090 级 GPU；微调：A100 80~GB / H100；机器人：自有平台、ALOHA、DROID}。\pihalf~\cite{pi05} 在 \pizero{} 基础上引入多来源异构数据的协同训练与高层语义子任务预测，能在未见过的家庭环境中执行 10 至 15 分钟的长程任务\hw{移动操作机器人}。FAST~\cite{fast} 用基于离散余弦变换的压缩分词重新激活了自回归路线，使其能处理高频灵巧任务。GR00T N1~\cite{gr00t} 采用“双系统”结构：VLM 模块（System 2）负责理解，扩散 Transformer 模块（System 1）负责生成动作，二者端到端联合训练（图~\ref{fig:gr00t}）。其摘要报告部署于 Fourier GR-1 人形机器人；官方代码库当前版本（N1.7）列出的推理平台包括 RTX 4090、L40、H100、Jetson AGX Thor/Orin 与 DGX Spark\hw{机器人：Fourier GR-1；推理：16~GB 以上显存 GPU，含 Jetson AGX Thor/Orin}。RDT-1B~\cite{rdt} 把基于扩散的机器人基础模型扩展到 12 亿参数，并提出物理可解释的统一动作空间（图~\ref{fig:rdt}）；其官方代码库说明模型部署于 ALOHA 双臂机器人\hw{ALOHA 双臂机器人}。SmolVLA~\cite{smolvla} 则反向而行，把整套方案压缩到约 4.5 亿参数，面向消费级 GPU 乃至 CPU 部署，并在低成本的 SO-100 机械臂上评测\hw{消费级 GPU / CPU；机器人：SO-100}。
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/gr00t_n1_arch.jpg}
+\caption{GR00T N1 的双系统结构：视觉-语言模型（System 2）编码图像与语言 token，扩散 Transformer（System 1）结合机器人状态对动作 token 去噪，输出电机动作。\figsrc{gr00t}}
+\label{fig:gr00t}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/rdt1b_overview.jpg}
+\caption{RDT-1B 概览：以 SigLIP 与 T5 编码输入、1B 参数扩散 Transformer 迭代去噪并使用统一动作空间；在 46 个数据集约 100 万回合上预训练，在约 6K 回合自采双臂数据上微调。\figsrc{rdt}}
+\label{fig:rdt}
+\end{figure}
+
 
 \subsection{按动作表示的分类法}
 
@@ -212,7 +253,14 @@ VLA 的发展可以大致分为三个阶段。
 
 \textbf{（1）离散 token 自回归。} 动作被离散化为 token，与文字一样逐个解码，代表工作为 RT-2~\cite{rt2}、OpenVLA~\cite{openvla} 与 \pizero-FAST~\cite{fast}。其推理形态与 LLM 完全相同：一次前缀预填充，接若干步 $M=1$ 的解码。它可以直接继承 LLM 推理栈的全部优化，但也继承了 LLM 解码的带宽瓶颈；每个动作块的解码步数等于动作 token 数，FAST 的意义正在于通过压缩减少这一数目。OpenVLA-OFT~\cite{openvlaoft} 则走得更远，改用并行解码、动作分块、连续动作表示与 L1 回归目标，据其摘要把动作生成吞吐提升约 26 倍。这一结果说明，逐 token 自回归并不是动作生成的必需形态。
 
-\textbf{（2）扩散动作头。} 动作由一个条件去噪网络经多步迭代生成，代表工作为 Diffusion Policy~\cite{diffpolicy}、Octo~\cite{octo}、GR00T N1~\cite{gr00t} 与 RDT-1B~\cite{rdt}，去噪网络常采用扩散 Transformer（DiT）~\cite{dit} 结构。推理形态为“一次条件编码 + $S$ 次去噪网络前向”，每次前向处理整个动作块。
+\textbf{（2）扩散动作头。} 动作由一个条件去噪网络经多步迭代生成，代表工作为 Diffusion Policy~\cite{diffpolicy}、Octo~\cite{octo}、GR00T N1~\cite{gr00t} 与 RDT-1B~\cite{rdt}，去噪网络常采用扩散 Transformer（DiT）~\cite{dit} 结构。推理形态为“一次条件编码 + $S$ 次去噪网络前向”，每次前向处理整个动作块（图~\ref{fig:diffpolicy}）。以 Diffusion Policy 为例，据检索到的论文正文，其真实机器人实验采用 DDIM，以 10 步推理在 NVIDIA RTX 3080 上达到约 0.1~s 的时延\hw{NVIDIA RTX 3080}。
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/diffusion_policy_teaser.png}
+\caption{三类策略表示的对比：(a) 显式策略直接回归动作；(b) 隐式策略以能量函数的 argmin 求动作；(c) 扩散策略以噪声预测网络迭代 $K$ 次，沿梯度场生成动作。\figsrc{diffpolicy}}
+\label{fig:diffpolicy}
+\end{figure}
+
 
 \textbf{（3）流匹配动作专家。} 流匹配~\cite{flowmatching} 通过回归固定条件概率路径上的向量场训练连续归一化流，与扩散相比训练更稳定，推理时可用少量常微分方程积分步完成。代表工作为 \pizero~\cite{pi0}、\pihalf~\cite{pi05} 与 SmolVLA~\cite{smolvla}。从硬件角度看，流匹配与扩散的推理形态同构：都是对同一个网络做 $S$ 次迭代前向，差别主要在步数与更新公式。
 
@@ -243,7 +291,14 @@ SmolVLA~\cite{smolvla} & 约 4.5 亿 & 流匹配 & 面向消费级硬件 \\
 
 \subsection{计算特征剖析：以 \texorpdfstring{\pizero{}}{pi0} 为例}\label{sec:pi0profile}
 
-本节以第~\ref{sec:case} 节案例所部署的 \pizero{} 为例，定量刻画流匹配 VLA 的推理负载。按项目简报，其结构如下：视觉编码器为 SigLIP~\cite{siglip} So400m/14（27 层，宽 1152，16 头 $\times$ 72）；语言模型为 Gemma-2B~\cite{gemma}（18 层，宽 2048，MLP 宽 16384，采用 GeGLU，8 个查询头 $\times$ 256，共享 1 个 KV 头）；动作专家约 3 亿参数（Gemma 结构，18 层，宽 1024，MLP 4096），关注 VLM 的 KV cache。动作由流匹配生成：每次推理做 10 个 Euler 积分步，输出 50 个未来动作组成的动作块。检查点在 DROID~\cite{droid} 数据集上微调，该数据集用 Franka Panda 7 自由度机械臂采集，约 7.6 万条轨迹、350 小时交互数据。
+本节以第~\ref{sec:case} 节案例所部署的 \pizero{} 为例，定量刻画流匹配 VLA 的推理负载。按项目简报，其结构如下：视觉编码器为 SigLIP~\cite{siglip} So400m/14（27 层，宽 1152，16 头 $\times$ 72）；语言模型为 Gemma-2B~\cite{gemma}（18 层，宽 2048，MLP 宽 16384，采用 GeGLU，8 个查询头 $\times$ 256，共享 1 个 KV 头）；动作专家约 3 亿参数（Gemma 结构，18 层，宽 1024，MLP 4096），关注 VLM 的 KV cache。动作由流匹配生成：每次推理做 10 个 Euler 积分步，输出 50 个未来动作组成的动作块。检查点在 DROID~\cite{droid} 数据集上微调，该数据集用 Franka Panda 7 自由度机械臂采集，约 7.6 万条轨迹、350 小时交互数据，其硬件配置见图~\ref{fig:droid}\hw{Franka Panda 7 自由度机械臂、Robotiq 2F-85 夹爪、2 台 Zed 2 立体相机与 1 台腕部 Zed Mini 相机}。
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.55\textwidth]{figures/droid_setup.jpg}
+\caption{DROID 的数据采集平台：Franka Panda 7 自由度机械臂、Robotiq 2F-85 夹爪、两台可调 Zed 2 立体相机、腕部 Zed Mini 立体相机、用于遥操作的 Oculus Quest 2 头显与控制笔记本。\figsrc{droid}}
+\label{fig:droid}
+\end{figure}
+
 
 \begin{figure}[t]
 \centering
@@ -282,7 +337,14 @@ SmolVLA~\cite{smolvla} & 约 4.5 亿 & 流匹配 & 面向消费级硬件 \\
   \item 动作专家 GEMM（$M=51$）：强度只有约 102~ops/byte，且每个积分步都要把全部专家权重再走一遍。简报称之为“权重搬运受限”（weight-movement-bound）。
   \item LLM 自回归解码（$M=1$）：强度约 2~ops/byte，是 FlightLLM~\cite{flightllm}、DFX~\cite{dfx}、EdgeLLM~\cite{edgellm} 等工作的主要对象。
 \end{itemize}
-VLA 的动作头因此处在预填充与解码之间的“中间地带”：它对带宽敏感，却不能像解码那样用“带宽 $\times$ 位宽”一个量刻画。图~\ref{fig:roofline} 以示意方式把三类 GEMM 放在屋顶线上。
+VLA 的动作头因此处在预填充与解码之间的“中间地带”：它对带宽敏感，却不能像解码那样用“带宽 $\times$ 位宽”一个量刻画。图~\ref{fig:roofline} 以示意方式把三类 GEMM 放在屋顶线上。VLA-Perf~\cite{vlaperf} 以解析模型独立给出了类似的结论：\pizero{} 去噪动作阶段的运算强度随动作块长度近似线性增长，动作块长度为 50 时约为 100~FLOPs/Byte，仍低于 B100 的“平衡运算强度”218.8~FLOPs/Byte（图~\ref{fig:vlaperfoi}）\hw{NVIDIA B100（解析模型）}。这与本文按式~\eqref{eq:intensity} 对 $M=51$ 的估算（约 102~ops/byte）处于同一量级；二者的数值精度假设可能不同，只宜比较量级。
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.36\textwidth]{figures/vlaperf_pi0_oi.png}
+\caption{VLA-Perf 给出的 \pizero{} 去噪动作阶段运算强度与动作块长度的关系（B100 解析模型），虚线为 B100 的平衡运算强度。\figsrc{vlaperf}}
+\label{fig:vlaperfoi}
+\end{figure}
+
 
 \begin{figure}[t]
 \centering
@@ -390,23 +452,58 @@ KV 复用 & 随序列增长 & 前缀 KV 固定、高频重读 & 慢系统输出�
 
 \subsection{改变动作生成的形态}
 
-最直接的优化是改变负载本身。OpenVLA-OFT~\cite{openvlaoft} 把 OpenVLA 的逐 token 自回归解码换成“并行解码 + 动作分块 + 连续回归头”，一次前向输出整块动作，据其摘要动作生成吞吐提升约 26 倍，同时在 LIBERO 基准上把平均成功率从 76.5\% 提升到 97.1\%。FAST~\cite{fast} 用离散余弦变换压缩动作序列，缩短自回归解码长度。ACT~\cite{act} 与 Diffusion Policy~\cite{diffpolicy} 引入的动作分块，本身也是一种“以一次推理换多步控制”的摊销手段。Dadu-Corki~\cite{corki} 进一步让模型预测近未来的轨迹而非单帧动作，以降低大模型的调用频率（第~\ref{sec:robot} 节）。这类方法改变的是负载本身，对任何硬件平台都有效。
+最直接的优化是改变负载本身。OpenVLA-OFT~\cite{openvlaoft} 把 OpenVLA 的逐 token 自回归解码换成“并行解码 + 动作分块 + 连续回归头”，一次前向输出整块动作，据其摘要动作生成吞吐提升约 26 倍，同时在 LIBERO 基准上把平均成功率从 76.5\% 提升到 97.1\%。其项目页给出的推理效率表（图~\ref{fig:oftefficiency}）在 NVIDIA A100 上测量：OpenVLA 为 4.2~Hz、0.240~s，OpenVLA-OFT 为 109.7~Hz、0.073~s（7 维动作、100 次查询平均、单张 224$\times$224 图像）；官方代码库给出的资源需求为单块约 16~GB（LIBERO）或约 18~GB（ALOHA）显存的 GPU\hw{推理测量：NVIDIA A100；机器人：ALOHA 双臂}。
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.9\textwidth]{figures/openvla_oft_efficiency.png}
+\caption{OpenVLA-OFT 项目页给出的 LIBERO 推理效率结果（原表），在 NVIDIA A100 上测量。\figsrc{openvlaoft}}
+\label{fig:oftefficiency}
+\end{figure}
+FAST~\cite{fast} 用离散余弦变换压缩动作序列，缩短自回归解码长度。ACT~\cite{act} 与 Diffusion Policy~\cite{diffpolicy} 引入的动作分块，本身也是一种“以一次推理换多步控制”的摊销手段。Dadu-Corki~\cite{corki} 进一步让模型预测近未来的轨迹而非单帧动作，以降低大模型的调用频率（第~\ref{sec:robot} 节）。这类方法改变的是负载本身，对任何硬件平台都有效。
 
 \subsection{跨帧复用与 token 剪枝}
 
-VLA 的前缀计算约占 85\% 的 MAC（第~\ref{sec:pi0profile} 节），而机器人连续两帧观测之间往往只有局部变化。VLA-Cache~\cite{vlacache} 利用这种时间连续性，识别相邻帧间变化很小的视觉 token 并复用其 KV，只对与任务相关、对环境敏感的 token 重算。据摘要，它在 LIBERO、SIMPLER 与真实机器人上取得最高约 1.7 倍的 CUDA 时延加速，控制频率提升 15\%，成功率损失可以忽略。视觉 Transformer 加速器中的自适应 token 剪枝（如 HeatViT~\cite{heatvit}，第~\ref{sec:fpga} 节）与之思路相通，只是后者作用于单帧内部。
+VLA 的前缀计算约占 85\% 的 MAC（第~\ref{sec:pi0profile} 节），而机器人连续两帧观测之间往往只有局部变化。VLA-Cache~\cite{vlacache} 利用这种时间连续性，识别相邻帧间变化很小的视觉 token 并复用其 KV，只对与任务相关、对环境敏感的 token 重算。据摘要，它在 LIBERO、SIMPLER 与真实机器人上取得最高约 1.7 倍的 CUDA 时延加速，控制频率提升 15\%，成功率损失可以忽略（方法见图~\ref{fig:vlacache}）\hw{NVIDIA GPU（CUDA 时延），具体型号本文未从可用来源读到}。
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/vlacache_method.jpg}
+\caption{VLA-Cache 的方法：(a) 动态 token 选择——依据相邻帧的图块相似度选出静态 token，并依据注意力得分剔除与任务相关的 token；(b) 自适应 token 缓存——按层的注意力熵决定复用比例，把静态 token 的 KV 放入缓存池，在下一时间步预填充。\figsrc{vlacache}}
+\label{fig:vlacache}
+\end{figure}
+视觉 Transformer 加速器中的自适应 token 剪枝（如 HeatViT~\cite{heatvit}，第~\ref{sec:fpga} 节）与之思路相通，只是后者作用于单帧内部。
 
 \subsection{动态深度与早退}
 
-DeeR-VLA~\cite{deervla} 观察到机器人控制中较容易的情境占多数，这些情境只需要较小的模型。它采用多出口结构，按预设的平均计算量、峰值计算量与显存约束决定激活多少层。在 CALVIN 基准上，它报告计算量降低 5.2 至 6.5 倍、GPU 显存降低 2 至 6 倍，且不损失性能。动态深度对 GPU 友好，但会破坏静态调度的确定性，这一点在 FPGA 上需要权衡（第~\ref{sec:future} 节）。
+DeeR-VLA~\cite{deervla} 观察到机器人控制中较容易的情境占多数，这些情境只需要较小的模型。它采用多出口结构，按预设的平均计算量、峰值计算量与显存约束决定激活多少层。在 CALVIN 基准上，它报告计算量降低 5.2 至 6.5 倍、GPU 显存降低 2 至 6 倍，且不损失性能。官方代码库说明其 CALVIN 评测在 8 块 V100 上运行（属于评测用途，而非部署平台）\hw{评测：8$\times$NVIDIA V100；以 CALVIN 仿真为基准}。动态深度对 GPU 友好，但会破坏静态调度的确定性，这一点在 FPGA 上需要权衡（第~\ref{sec:future} 节）。
 
 \subsection{减少去噪或积分步数}
 
-扩散与流匹配策略的步数是最直接的时延杠杆。Consistency Policy~\cite{consistencypolicy} 通过在预训练 Diffusion Policy 的轨迹上强制自一致性进行蒸馏，据摘要在 9 个仿真与真实任务上显著提高推理速度而不牺牲成功率，其动机正是“移动机械臂、四旋翼等平台无法搭载高端 GPU”。LightDP~\cite{lightdp} 面向移动设备压缩扩散 Transformer 策略并减少采样步数。这类方法表明，“减少积分或去噪步数”是生成式动作头端侧部署的通用手段，但通常需要额外的蒸馏或训练。
+扩散与流匹配策略的步数是最直接的时延杠杆。Consistency Policy~\cite{consistencypolicy} 通过在预训练 Diffusion Policy 的轨迹上强制自一致性进行蒸馏，据摘要在 9 个仿真与真实任务上显著提高推理速度而不牺牲成功率，其动机正是“移动机械臂、四旋翼等平台无法搭载高端 GPU”（图~\ref{fig:cp}）；据检索，其演示在笔记本 GPU 上运行\hw{笔记本 GPU}。LightDP~\cite{lightdp} 面向移动设备压缩扩散 Transformer 策略并减少采样步数。据检索到的摘要信息，它在 iPhone 13 上分析了扩散策略的时延构成（扩散 Transformer 在 DP-T 中占总推理时间的 90\% 以上），并把 DP-T 与 MDT-V 中扩散 Transformer 的时延分别从 90.6~ms、22.25~ms 降至 2.72~ms、4.1~ms\hw{Apple iPhone 13}。
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.6\textwidth]{figures/consistency_policy_teaser.jpg}
+\caption{Diffusion Policy 与 Consistency Policy 的推理过程对比：前者从噪声 $(\mathbf{x}_T,T)$ 逐步去噪到 $(\mathbf{x}_0,0)$，后者一步完成映射。\figsrc{consistencypolicy}}
+\label{fig:cp}
+\end{figure}
+这类方法表明，“减少积分或去噪步数”是生成式动作头端侧部署的通用手段，但通常需要额外的蒸馏或训练。
 
 \subsection{量化}
 
-\textbf{LLM 量化方法。} LLM.int8()~\cite{llmint8} 结合按向量量化与离群特征的混合精度分解，使 1,750 亿参数模型可以 INT8 推理而不降性能。SmoothQuant~\cite{smoothquant} 通过数学等价变换把激活中的离群值迁移到权重，使 W8A8 量化免训练且几乎无损，据摘要带来最高 1.56 倍加速与 2 倍内存节省。GPTQ~\cite{gptq} 基于近似二阶信息做逐层权重量化，可在约 4 GPU 小时内把 1,750 亿参数模型量化到 3 或 4 位。AWQ~\cite{awq} 观察到保护约 1\% 的显著权重即可大幅降低量化误差，并通过激活感知的按通道缩放实现低比特仅权重量化。
+\textbf{LLM 量化方法。} LLM.int8()~\cite{llmint8} 结合按向量量化与离群特征的混合精度分解，使 1,750 亿参数模型可以 INT8 推理而不降性能。SmoothQuant~\cite{smoothquant} 通过数学等价变换把激活中的离群值迁移到权重，使 W8A8 量化免训练且几乎无损，据摘要带来最高 1.56 倍加速与 2 倍内存节省（原理见图~\ref{fig:smoothquant}；其论文的 GPU 评测使用 NVIDIA A100）\hw{NVIDIA A100}。GPTQ~\cite{gptq} 基于近似二阶信息做逐层权重量化，可在约 4 GPU 小时内把 1,750 亿参数模型量化到 3 或 4 位。AWQ~\cite{awq} 观察到保护约 1\% 的显著权重即可大幅降低量化误差，并通过激活感知的按通道缩放实现低比特仅权重量化（图~\ref{fig:awq}）；其官方代码库以 RTX 4090 与 Jetson Orin 演示 TinyChat 边缘推理（W4A16 相对 FP16 分别快约 2.7 与 2.9 倍）\hw{RTX 4090、Jetson Orin}。
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/smoothquant_intuition.png}
+\caption{SmoothQuant 的原理：(a) 激活中存在离群值、难以量化，而权重分布平坦、易于量化；(b) 通过数学等价的逐通道缩放把量化难度从激活迁移到权重，使二者都易于量化。\figsrc{smoothquant}}
+\label{fig:smoothquant}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/awq_overview.png}
+\caption{AWQ 的原理：(a) 直接 RTN 量化到 INT3 导致困惑度大幅上升；(b) 以激活幅值判定并保留 1\% 的显著权重为 FP16 可恢复精度，但混合精度对硬件不友好；(c) 在量化前按激活幅值缩放权重，达到同等精度且保持统一位宽。\figsrc{awq}}
+\label{fig:awq}
+\end{figure}
+
 
 \textbf{量化粒度的硬件代价。} 从硬件角度看，量化方案的代价不只取决于位宽，还取决于尺度的粒度与计算方式。按输出通道的权重尺度是静态的，可以离线计算并随权重一起存储，反量化时只需乘以一个列常数。按 token 的动态激活尺度则必须在运行时对每一行求最大绝对值，这是一个行归约操作，要求在量化之前看到整行数据。分组量化（每若干个元素共享一个尺度）进一步提高了精度，但使反量化需要在点积的中间插入尺度乘法，破坏了整数累加的连续性。块浮点可以看作分组量化的一种硬件友好形式：共享指数在块内对齐尾数后，点积可以在整数域中完成，只在块边界处理指数。对 FPGA 而言，这些粒度选择直接决定了向量通路的工作量与矩阵单元结果通路的复杂度，应与第~\ref{sec:nonlinear} 节讨论的非线性算子实现一起设计。
 
@@ -414,11 +511,32 @@ DeeR-VLA~\cite{deervla} 观察到机器人控制中较容易的情境占多数�
 
 \subsection{系统级表征与异步执行}
 
-VLA-Perf~\cite{vlaperf} 建立了 VLA 推理的解析性能模型，系统分析了模型规模、结构选择、长视频上下文、异步推理与双系统模型对时延的影响，以及端侧、边缘服务器与云端三种部署位置的取舍，给出 15 条设计要点。另一项跨加速器表征工作~\cite{xpuvla} 提出了“成本—能耗—时间”排行榜，指出 VLA 推理存在两重串行性——VLM 与动作专家之间的流水线级串行，以及扩散过程内部的组件级串行——并据此提出两种免训练的加速方法；其结论之一是，在实时约束下，“规模合适”的边缘加速器可能比旗舰 GPU 更具成本与能耗优势。RTC~\cite{rtc} 则从执行侧放宽了时延约束（第~\ref{sec:loop} 节）。
+VLA-Perf~\cite{vlaperf}（图~\ref{fig:vlaperfoverview}）建立了 VLA 推理的解析性能模型，系统分析了模型规模、结构选择、长视频上下文、异步推理与双系统模型对时延的影响，以及端侧、边缘服务器与云端三种部署位置的取舍，给出 15 条设计要点。其官方代码库说明，建模覆盖数据中心 GPU（A100、H100、B100）、边缘 GPU（RTX 4090）与 Jetson 系列嵌入式设备（含 AGX Thor、AGX Orin 等）\hw{解析模型：A100/H100/B100、RTX 4090、Jetson 系列}。
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/vlaperf_overview.png}
+\caption{VLA-Perf 的问题设定：模型设计维度（规模、结构、长上下文、去噪配置、异步、双系统）与系统维度（GPU 能力、推理位置、网络配置）组合出的推理场景空间，以及其要回答的三个问题。\figsrc{vlaperf}}
+\label{fig:vlaperfoverview}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/vlaperf_pi0_components.png}
+\caption{VLA-Perf 解析模型给出的 \pizero{} 各组件时延随模型规模的变化：(a) 视觉编码器，(b) VLM，(c) 动作专家；平台为 B100、RTX 4090 与 Jetson Thor。\figsrc{vlaperf}}
+\label{fig:vlaperfcomp}
+\end{figure}
+另一项跨加速器表征工作~\cite{xpuvla}\hw{CPU：Intel i7-11700；GPU：RTX 4090、Jetson Thor、Jetson AGX Orin；NPU：昇腾 310B/310P；XPU：Intel B60 Pro（据检索）} 提出了“成本—能耗—时间”排行榜，指出 VLA 推理存在两重串行性——VLM 与动作专家之间的流水线级串行，以及扩散过程内部的组件级串行——并据此提出两种免训练的加速方法；其结论之一是，在实时约束下，“规模合适”的边缘加速器可能比旗舰 GPU 更具成本与能耗优势。RTC~\cite{rtc} 则从执行侧放宽了时延约束（第~\ref{sec:loop} 节）；据检索，其真实机器人实验以 \pihalf{} 为基础策略、在单块 RTX 4090 上推理，并人为注入额外延迟以检验鲁棒性\hw{RTX 4090；双臂机器人}。
 
 \subsection{部署位置与系统形态}
 
-VLA-Perf~\cite{vlaperf} 讨论了 VLA 推理应当放在何处执行：机器人本体、边缘服务器还是云端。三种位置在时延构成上差别很大。本体推理没有网络时延，但受功耗与体积约束，算力最小；边缘服务器算力更大，但引入局域网往返；云端算力几乎不受限，但广域网时延与抖动难以保证。对于需要高频闭环的操作任务，网络时延与抖动本身就可能超出控制周期的预算，这使本体或近端推理成为首选。
+VLA-Perf~\cite{vlaperf} 讨论了 VLA 推理应当放在何处执行：机器人本体、边缘服务器还是云端。三种位置在时延构成上差别很大。本体推理没有网络时延，但受功耗与体积约束，算力最小；边缘服务器算力更大，但引入局域网往返；云端算力几乎不受限，但广域网时延与抖动难以保证。对于需要高频闭环的操作任务，网络时延与抖动本身就可能超出控制周期的预算，这使本体或近端推理成为首选。图~\ref{fig:vlaperfds} 是 VLA-Perf 对 \pizero{} 端到端时延的解析估计：Jetson Thor 本体推理约 52.6~ms；RTX 4090 边缘服务器经 10~Gb 以太网约 31.2~ms，经 4G 约 100.9~ms；B100 服务器经 10~Gb 以太网约 3.3~ms\hw{解析模型：Jetson Thor、RTX 4090、B100}。需要强调，这些是解析模型在其默认配置下的估计，与第~\ref{sec:case} 节案例在 Thor 上实测的 125.3~ms \tM{} 配置不同（输入 token 数、步数、数值格式与软件栈都可能不同），不能直接比较；但二者相差约 2.4 倍这一事实本身提示，实际软件栈与解析上界之间可能存在可观的空间。
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/vlaperf_device_server.png}
+\caption{VLA-Perf 解析模型给出的 \pizero{} 端到端时延：本体推理（Jetson Thor）与不同网络条件下的边缘/云端服务器推理（RTX 4090、B100）。\figsrc{vlaperf}}
+\label{fig:vlaperfds}
+\end{figure}
+
 
 在本体推理中，系统形态又分为两种。一种是“单一 SoC”形态，如 Jetson 系列，CPU、GPU 与内存集成在同一封装中，数据不必跨越 PCIe；另一种是“主机 + 加速卡”形态，如第~\ref{sec:case} 节案例的 PCIe FPGA 卡，输入与输出需要经主机与 PCIe 传输。后者的主机开销（案例中约 47~ms/次调用）在百毫秒级的目标下已不可忽略。因此，FPGA 方案若要与 SoC 方案竞争，除了加速器内核本身，还需要考虑与传感器的直接连接（例如相机数据直接进入 FPGA）、减少主机参与等系统级设计。这类“把加速器放在数据通路上”的做法恰是 FPGA 的传统强项，但在 VLA 部署文献中尚未见系统讨论。
 
@@ -436,35 +554,70 @@ VLA-Perf~\cite{vlaperf} 讨论了 VLA 推理应当放在何处执行：机器人
 
 \subsection{早期的 Transformer 与注意力加速}
 
-FTRANS~\cite{ftrans} 是较早的 FPGA Transformer 加速工作，采用增强的块循环矩阵表示压缩权重，据摘要把模型大小降低最多 16 倍，相对 CPU 取得 27.07 倍性能与 81 倍能效提升，相对 GPU 能效提升最高 8.80 倍。它代表了“算法级压缩 + 专用数据通路”的早期路线。
+FTRANS~\cite{ftrans} 是较早的 FPGA Transformer 加速工作，采用增强的块循环矩阵表示压缩权重，据摘要把模型大小降低最多 16 倍，相对 CPU 取得 27.07 倍性能与 81 倍能效提升，相对 GPU 能效提升最高 8.80 倍。据检索到的论文正文，其实现平台为 Xilinx Virtex UltraScale+ VCU118 板卡，以 SDx 2017.1 做高层次综合，报告约 170~GOPS 与 6.8~GOPS/W\hw{Xilinx VCU118（Virtex UltraScale+）；对照：CPU、GPU}。它代表了“算法级压缩 + 专用数据通路”的早期路线。
 
-在 ASIC 方向，一系列工作专门针对注意力。A$^3$~\cite{a3} 观察到注意力在语义上是一种基于内容的检索，大部分计算最终不被使用，据此以算法近似与硬件专用化结合加速注意力。ELSA~\cite{elsa} 提出一种高效过滤“不太可能影响输出的关系”的近似方案，降低自注意力的计算量。SpAtten~\cite{spatten} 通过级联的 token 剪枝与 head 剪枝减少注意力的计算与访存，并设计高吞吐的 top-$k$ 排序引擎与“先取高位、置信度低时再取低位”的渐进量化；据摘要它把 DRAM 访问量平均降低 10.0 倍，相对 A$^3$ 加速 1.6 倍。这类工作的着眼点是长序列注意力。对 \pizero{} 而言，前缀只有 525 个 token，注意力的 MAC 占比很低，其主要借鉴意义在于“对视觉 token 做运行时剪枝”的思想。
+在 ASIC 方向，一系列工作专门针对注意力。A$^3$~\cite{a3}\hw{ASIC 设计} 观察到注意力在语义上是一种基于内容的检索，大部分计算最终不被使用，据此以算法近似与硬件专用化结合加速注意力。ELSA~\cite{elsa}\hw{ASIC 设计} 提出一种高效过滤“不太可能影响输出的关系”的近似方案，降低自注意力的计算量。SpAtten~\cite{spatten} 通过级联的 token 剪枝与 head 剪枝减少注意力的计算与访存，并设计高吞吐的 top-$k$ 排序引擎与“先取高位、置信度低时再取低位”的渐进量化；据摘要它把 DRAM 访问量平均降低 10.0 倍，相对 A$^3$ 加速 1.6 倍，相对 TITAN Xp GPU 与 Xeon CPU 分别加速 162 倍与 347 倍（级联剪枝示意见图~\ref{fig:spatten}）\hw{ASIC 设计；对照：A$^3$、MNNFast、TITAN Xp GPU、Xeon CPU}。
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.5\textwidth]{figures/spatten_cascade_pruning.png}
+\caption{SpAtten 的级联 token 与 head 剪枝示意：以 BERT 情感分类为例，逐层在运行时剪去不重要的 token 与 head，后续层的计算与访存随之减少。\figsrc{spatten}}
+\label{fig:spatten}
+\end{figure}
+这类工作的着眼点是长序列注意力。对 \pizero{} 而言，前缀只有 525 个 token，注意力的 MAC 占比很低，其主要借鉴意义在于“对视觉 token 做运行时剪枝”的思想。
 
 \subsection{视觉 Transformer 加速}
 
-VLA 的视觉编码器通常是视觉 Transformer（ViT），因此 ViT 加速工作与 VLA 前缀的一部分直接相关。Auto-ViT-Acc~\cite{autovitacc} 提出面向 FPGA 的混合方案量化框架，据摘要相对 32 位浮点基线 FPGA 加速器把 DeiT-base 的帧率提升约 5.6 倍，ImageNet 精度下降 0.71\%。HeatViT~\cite{heatvit} 在嵌入式 FPGA 上实现图像自适应的 token 剪枝：它把非信息 token 打包为一个 token 而不是直接丢弃，在 ZCU102 上相对无剪枝的 16 位基线加速器取得 3.46 至 4.89 倍加速。ViTCoD~\cite{vitcod} 利用 ViT 输入 token 数固定的特点，把注意力图剪枝并极化为稠密与稀疏两种固定模式，再以专用加速器协调两类负载。这些工作都利用了 ViT “token 数固定”的特点，这一点同样适用于 VLA 的视觉前缀；但它们大多只处理单帧，未利用机器人观测的帧间连续性。
+VLA 的视觉编码器通常是视觉 Transformer（ViT），因此 ViT 加速工作与 VLA 前缀的一部分直接相关。Auto-ViT-Acc~\cite{autovitacc} 提出面向 FPGA 的混合方案量化框架，据摘要相对 32 位浮点基线 FPGA 加速器把 DeiT-base 的帧率提升约 5.6 倍，ImageNet 精度下降 0.71\%\hw{Xilinx ZCU102，150~MHz（据检索到的论文正文）}。HeatViT~\cite{heatvit} 在嵌入式 FPGA 上实现图像自适应的 token 剪枝：它把非信息 token 打包为一个 token 而不是直接丢弃，在 ZCU102 上相对无剪枝的 16 位基线加速器取得 3.46 至 4.89 倍加速\hw{Xilinx ZCU102（嵌入式 FPGA）}。ViTCoD~\cite{vitcod} 利用 ViT 输入 token 数固定的特点，把注意力图剪枝并极化为稠密与稀疏两种固定模式，再以专用加速器协调两类负载（图~\ref{fig:vitcod}、图~\ref{fig:vitcodarch}）。其加速器以模拟器评估，官方代码库中的 FLOPs 与时延剖析则在 NVIDIA Jetson TX2 上测量\hw{专用加速器（模拟器评估）；剖析平台：Jetson TX2}。
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/vitcod_overview.png}
+\caption{ViTCoD 的算法与加速器协同设计：(a) 算法侧把注意力图划分为较稠密与较稀疏两类固定模式，并以自编码器压缩 Q/K 以减少数据搬运；(b) 加速器侧以“较稠密引擎”与“较稀疏引擎”分别处理两类负载，片上集成编码器与解码器。\figsrc{vitcod}}
+\label{fig:vitcod}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.9\textwidth]{figures/vitcod_arch.png}
+\caption{ViTCoD 加速器的微结构：权重与激活全局缓冲经交叉开关连接“较稠密引擎”与“较稀疏引擎”，二者各含 MAC 行阵列、Softmax 单元与编解码器；右下为 PE 内与 PE 间累加的两种数据流。\figsrc{vitcod}}
+\label{fig:vitcodarch}
+\end{figure}
+这些工作都利用了 ViT “token 数固定”的特点，这一点同样适用于 VLA 的视觉前缀；但它们大多只处理单帧，未利用机器人观测的帧间连续性。
 
 \subsection{LLM 推理加速}
 
-\textbf{DFX~\cite{dfx}（MICRO 2022）} 是由 4 块 Alveo U280 组成的多 FPGA 设备，端到端执行 GPT-2 的摘要（预填充）与生成（解码）两个阶段。它采用模型并行与“模型—硬件感知”的数据流，计算核执行自定义指令，用满 HBM 的所有通道，板间以 QSFP 组成环网。据摘要，它相对 4 块 V100 取得 5.58 倍加速与 3.99 倍能效。DFX 的启示在于“自定义指令 + 端到端执行全部算子”：非线性算子不留给主机。
+\textbf{DFX~\cite{dfx}（MICRO 2022）} 是由 4 块 Alveo U280 组成的多 FPGA 设备，端到端执行 GPT-2 的摘要（预填充）与生成（解码）两个阶段。它采用模型并行与“模型—硬件感知”的数据流，计算核执行自定义指令，用满 HBM 的所有通道，板间以 QSFP 组成环网。据摘要，它相对 4 块 V100 取得 5.58 倍加速与 3.99 倍能效\hw{4$\times$Xilinx Alveo U280（HBM）；对照：4$\times$NVIDIA V100}。DFX 的启示在于“自定义指令 + 端到端执行全部算子”：非线性算子不留给主机。
 
-\textbf{FlightLLM~\cite{flightllm}（FPGA 2024）} 提出面向 LLM 的完整映射流程，平台为 Alveo U280。三项关键技术是：用于支持多种稀疏模式的可配置稀疏 DSP 链；解码阶段激活常驻片上并支持混合精度，以提升有效带宽；长度自适应编译，以降低不同序列长度下的编译开销。据摘要，在 batch 为 1 的 LLaMA2-7B 上，它相对 NVIDIA V100S（vLLM 与 SmoothQuant）取得 6.0 倍能效与 1.8 倍成本效率。FlightLLM 与本文案例在思想上最接近：两者都利用硬核级联组织矩阵阵列，并依赖完整的编译流程；区别在于 FlightLLM 面向 $M=1$ 的解码，利用 HBM 与稀疏性，不涉及多步迭代的动作头。
+\textbf{FlightLLM~\cite{flightllm}（FPGA 2024）} 提出面向 LLM 的完整映射流程，平台为 Alveo U280。三项关键技术是：用于支持多种稀疏模式的可配置稀疏 DSP 链；解码阶段激活常驻片上并支持混合精度，以提升有效带宽；长度自适应编译，以降低不同序列长度下的编译开销。据摘要，在 batch 为 1 的 LLaMA2-7B 上，它相对 NVIDIA V100S（vLLM 与 SmoothQuant）取得 6.0 倍能效与 1.8 倍成本效率；据检索到的论文正文，它在 Versal VHK158 上达到约 92.5~tokens/s，吞吐约为 A100 的 1.2 倍\hw{Xilinx Alveo U280 与 Versal VHK158；对照：V100S、A100}。FlightLLM 与本文案例在思想上最接近：两者都利用硬核级联组织矩阵阵列，并依赖完整的编译流程；区别在于 FlightLLM 面向 $M=1$ 的解码，利用 HBM 与稀疏性，不涉及多步迭代的动作头。
 
-\textbf{Chen 等~\cite{chen2024trets}（ACM TRETS）} 研究模型专用的空间加速：为特定算子或层专门化硬件单元，单元之间以数据流直连，尽量减少片外访问。其核心贡献是一个预测空间加速器性能的解析模型与一套可组合、可复用的 HLS kernel 库。在 U280 上，据摘要，BERT 相对此前 FPGA 加速器最高加速 13.4 倍；GPT 的预填充相对 DFX 加速 2.2 倍，解码相对 A100 加速 1.9 倍、能效提高 5.7 倍。该文讨论的空间（层间流水）与时间复用（单一阵列逐层执行）之间的取舍，正是 VLA 双形态负载需要面对的问题。
+\textbf{Chen 等~\cite{chen2024trets}（ACM TRETS）} 研究模型专用的空间加速：为特定算子或层专门化硬件单元，单元之间以数据流直连，尽量减少片外访问。其核心贡献是一个预测空间加速器性能的解析模型与一套可组合、可复用的 HLS kernel 库。在 U280 上，据摘要，BERT 相对此前 FPGA 加速器最高加速 13.4 倍；GPT 的预填充相对 DFX 加速 2.2 倍，解码相对 A100 加速 1.9 倍、能效提高 5.7 倍\hw{AMD Alveo U280；对照：DFX、NVIDIA A100}。该文讨论的空间（层间流水）与时间复用（单一阵列逐层执行）之间的取舍，正是 VLA 双形态负载需要面对的问题。
 
-\textbf{HLSTransform~\cite{hlstransform}} 用高层次综合（High-Level Synthesis，HLS）在 Virtex UltraScale+ VU9P 上实现 Llama 2 推理。据摘要，每 token 能耗相对 Xeon CPU 降低最多 12.75 倍、相对 RTX 3090 降低 8.25 倍，速度约为 RTX 3090 的 0.53 倍。“能效优于 GPU、绝对速度不及 GPU”是 FPGA LLM 工作中相当普遍的格局。
+\textbf{HLSTransform~\cite{hlstransform}} 用高层次综合（High-Level Synthesis，HLS）在 Virtex UltraScale+ VU9P 上实现 Llama 2 推理。据摘要，每 token 能耗相对 Xeon CPU 降低最多 12.75 倍、相对 RTX 3090 降低 8.25 倍，速度约为 RTX 3090 的 0.53 倍\hw{Xilinx VU9P；对照：Intel Xeon E5-2686 v4、NVIDIA RTX 3090}。“能效优于 GPU、绝对速度不及 GPU”是 FPGA LLM 工作中相当普遍的格局。
 
-\textbf{EdgeLLM~\cite{edgellm}} 是 CPU-FPGA 异构的边缘 LLM 加速器，平台为带 HBM 的 VCU128。它采用混合精度处理单元阵列与分组脉动结构，注意力部分用 FP16$\times$FP16，前馈网络用 FP16$\times$INT4，并以统一的数据形状使不同算子无需数据重排。它是“按层类型分配精度”的代表，与本文案例“均匀 W8A8 / 均匀 INT4”两种方案形成对照。
+\textbf{EdgeLLM~\cite{edgellm}} 是 CPU-FPGA 异构的边缘 LLM 加速器，平台为带 HBM 的 VCU128。它采用混合精度处理单元阵列与分组脉动结构，注意力部分用 FP16$\times$FP16，前馈网络用 FP16$\times$INT4，并以统一的数据形状使不同算子无需数据重排\hw{Xilinx VCU128（带 HBM）+ 主机 CPU}。它是“按层类型分配精度”的代表，与本文案例“均匀 W8A8 / 均匀 INT4”两种方案形成对照。
 
-\textbf{近期工作。} 面向边缘 FPGA 的三值 LLM 加速器 TeLLMe v2~\cite{tellme} 以查表矩阵乘同时支持预填充与解码；SpeedLLM~\cite{speedllm} 探索了 FPGA 上的软硬件协同设计。这些工作延续了“低比特 + 带宽优化”的思路，但目标负载仍是语言模型解码。
+\textbf{近期工作。} 面向边缘 FPGA 的三值 LLM 加速器 TeLLMe v2~\cite{tellme} 以查表矩阵乘同时支持预填充与解码；据检索，TeLLMe 系列在 AMD Kria KV260（Zynq UltraScale+ XCK26，250~MHz）上实现，报告解码约 9.51~tokens/s、预填充时延约 0.55~s\hw{AMD Kria KV260}。SpeedLLM~\cite{speedllm}（HPDC 2025）在 Alveo U280 上针对 TinyLlama 做数据流并行、存储复用与算子融合，据摘要相对传统 TinyLlama 实现最高快 4.8 倍、能耗低 1.18 倍\hw{Xilinx Alveo U280}。这些工作延续了“低比特 + 带宽优化”的思路，但目标负载仍是语言模型解码。
 
 \textbf{各工作对 VLA 的适用性。} 上述 LLM 加速工作各自针对的负载形态不同，迁移到 VLA 时的适用程度也不同。DFX 与 Chen 等的工作同时处理了预填充与解码，其“端到端执行全部算子”与“空间/时间复用取舍”的经验可以直接借鉴，但它们使用多块或大型带 HBM 的器件，与机器人端侧的功耗与体积约束不同。FlightLLM 与 EdgeLLM 的核心优化针对 $M=1$ 的解码，其稀疏 DSP 链与混合精度可以用于 VLA 的前缀与动作头，但“解码阶段激活常驻片上”在 VLA 中需要改为“前缀 KV 与专家权重常驻”。HLSTransform 展示了 HLS 流程的可达性，但其绝对速度约为高端 GPU 的一半，在 VLA 的时延约束下需要进一步提升。三值与低比特方案（如 TeLLMe~\cite{tellme}）在语言模型上可行，但在对量化更敏感的 VLA 上是否可用尚无证据，本文案例的 INT4 结果对此提出了警示。
 
 \subsection{AI 优化器件上的阵列组织}
 
-\textbf{Stratix 10 NX。} 如第~\ref{sec:bg} 节所述，其 AI Tensor Block 以 INT8/INT4 为基础精度并支持块浮点，前馈数据通路即使用满全部张量块也能在中速等级器件上以 500~MHz 以上收敛时序~\cite{s10nx_fpga21,s10nx_trets}。Boutros 等~\cite{s10nx_fpt} 的实测对比表明，其张量块的 INT8 峰值约 143~TOPS，但实际可达性能主要取决于张量单元利用率与系统开销；相对常规 DSP 的 FPGA 平均提升 3.5 倍。
+\textbf{Stratix 10 NX。} 如第~\ref{sec:bg} 节所述，其 AI Tensor Block 以 INT8/INT4 为基础精度并支持块浮点，前馈数据通路即使用满全部张量块也能在中速等级器件上以 500~MHz 以上收敛时序~\cite{s10nx_fpga21,s10nx_trets}。Boutros 等~\cite{s10nx_fpt} 的实测对比表明，其张量块的 INT8 峰值约 143~TOPS，但实际可达性能主要取决于张量单元利用率与系统开销；相对常规 DSP 的 FPGA 平均提升 3.5 倍\hw{Intel Stratix 10 NX；对照：NVIDIA T4、V100}。
 
-\textbf{Versal AI Engine。} CHARM~\cite{charm}（FPGA 2023）观察到，把 BERT 中尺寸较小的矩阵乘层放在 Versal ACAP 上一个庞大的单体矩阵乘加速器上执行，只能达到理论峰值的不到 5\%；它据此提出组合多个异构矩阵乘加速器，并发服务不同尺寸的层。该文给出的平台背景为 400 个 AIE、1~GHz、fp32 峰值约 6.4~TFLOPs。SSR~\cite{ssr}（FPGA 2024）进一步在 VCK190 上把空间并行与顺序执行混合，给出时延—吞吐的帕累托前沿，据摘要相对 A10G 平均吞吐提升 2.53 倍。这两项工作对 VLA 最直接的意义是：\emph{不同形状的 GEMM 需要不同形状的阵列}。CHARM 的“不到 5\%”与 VLA 中“前缀 $M\approx525$ 与专家 $M=51$ 共享同一阵列”面对的是同一个问题。
+\textbf{Versal AI Engine。} CHARM~\cite{charm}（FPGA 2023）观察到，把 BERT 中尺寸较小的矩阵乘层放在 Versal ACAP 上一个庞大的单体矩阵乘加速器上执行，只能达到理论峰值的不到 5\%；它据此提出组合多个异构矩阵乘加速器，并发服务不同尺寸的层。该文给出的平台背景为 400 个 AIE、1~GHz、fp32 峰值约 6.4~TFLOPs。图~\ref{fig:charmversal} 摘自作者的报告幻灯片，展示了 Versal 的编程模型：AIE 阵列与可编程逻辑之间约 1.2~TB/s，而 DDR4 经 NoC 约 25.6~GB/s——片外带宽与片上带宽相差近两个数量级，这正是小矩阵在单体加速器上利用率低的根源之一；图~\ref{fig:charmframework} 为 CHARM 的自动化框架\hw{AMD Versal VCK190；官方代码库亦支持 VCK5000}。
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.7\textwidth]{figures/charm_versal_model.jpg}
+\caption{Versal 编程模型（摘自 CHARM 作者报告幻灯片）：由 VLIW 处理器与 32~KB 本地存储组成的 AIE 阵列，经 PLIO 与可编程逻辑相连（约 1.2~TB/s），可编程逻辑经 NoC 访问 DDR4（约 25.6~GB/s）。\figsrc{charm}}
+\label{fig:charmversal}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.8\textwidth]{figures/charm_framework.jpg}
+\caption{CHARM 框架：以模型、带宽剖析与资源约束为输入，经多样加速器组合器（设计空间探索）与自动代码生成器（AIE/PL/HOST）生成比特流与主机运行时。\figsrc{charm}}
+\label{fig:charmframework}
+\end{figure}
+SSR~\cite{ssr}（FPGA 2024）进一步在 VCK190 上把空间并行与顺序执行混合，给出时延—吞吐的帕累托前沿，据摘要相对 A10G 平均吞吐提升 2.53 倍\hw{AMD Versal VCK190；对照：NVIDIA A10G、ZCU102、U250}。这两项工作对 VLA 最直接的意义是：\emph{不同形状的 GEMM 需要不同形状的阵列}。CHARM 的“不到 5\%”与 VLA 中“前缀 $M\approx525$ 与专家 $M=51$ 共享同一阵列”面对的是同一个问题。
 
 \textbf{Speedster7t。} 其 MLP 阵列、二维 NoC 与 GDDR6 接口~\cite{achronix} 构成了本文案例的平台（第~\ref{sec:case} 节）。与 U280 的 HBM + AXI 互连、Versal 的 AIE 阵列 + 可编程逻辑相比，Speedster7t 的特点是“硬核级联 + 硬化 NoC 直达 GDDR6”，更适合由多个独立单元各自访存的组织方式。
 
@@ -476,17 +629,31 @@ VLA 的视觉编码器通常是视觉 Transformer（ViT），因此 ViT 加速�
 
 \subsection{数值格式}
 
-块浮点（Block Floating Point，BFP）让一组元素共享指数，元素本身用窄位宽尾数，在接近整数运算的硬件成本下保留一定动态范围。MSFP~\cite{msfp}（NeurIPS 2020）是微软 Brainwave 生产系统使用的块浮点族，据摘要在不修改模型拓扑的前提下，以低于 bf16 约 3 倍、低于 INT8 约 4 倍的成本达到相当精度，精度影响小于 1\%。MX~\cite{mx} 规范在此基础上定义了块大小、共享尺度与窄位宽元素三要素，给出 MXFP8、MXFP6、MXFP4 与 MXINT8 四种格式，并报告在二十余个基准上可作为 FP32 的直接替代，还首次在亚 8 位权重、激活与梯度下训练生成式语言模型。Stratix 10 NX 的张量块原生支持 Block FP16 与 Block FP12~\cite{s10nx_fpga21}；面向机器人学习，已有工作设计了支持 MX 的精度可伸缩硬件~\cite{mxrobot}。在 VLA 对精度敏感的前提下，块浮点是“以接近 INT8 的成本换取更好精度”的主要候选，第~\ref{sec:case} 节案例的 BFP8 探索提供了一个具体数据点。
+块浮点（Block Floating Point，BFP）让一组元素共享指数，元素本身用窄位宽尾数，在接近整数运算的硬件成本下保留一定动态范围。MSFP~\cite{msfp}（NeurIPS 2020）是微软 Brainwave 生产系统使用的块浮点族\hw{微软云端定制推理硬件（Brainwave，FPGA）}，据摘要在不修改模型拓扑的前提下，以低于 bf16 约 3 倍、低于 INT8 约 4 倍的成本达到相当精度，精度影响小于 1\%。MX~\cite{mx} 规范在此基础上定义了块大小、共享尺度与窄位宽元素三要素，给出 MXFP8、MXFP6、MXFP4 与 MXINT8 四种格式（其参考实现中线性层的量化与舍入位置见图~\ref{fig:mx}），并报告在二十余个基准上可作为 FP32 的直接替代，还首次在亚 8 位权重、激活与梯度下训练生成式语言模型。Stratix 10 NX 的张量块原生支持 Block FP16 与 Block FP12~\cite{s10nx_fpga21}；面向机器人学习，已有工作设计了支持 MX 的精度可伸缩硬件~\cite{mxrobot}\hw{TSMC 16~nm ASIC 综合，500~MHz（据检索）}。
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/mx_linear_quant.png}
+\caption{MX 参考实现（microxcaling）中线性层前向与反向传播的量化与舍入选项：矩阵乘的输入在进入 MatMul 前先做 bfloat 量化，再按 MX 元素格式量化。\figsrc{mx}}
+\label{fig:mx}
+\end{figure}
+在 VLA 对精度敏感的前提下，块浮点是“以接近 INT8 的成本换取更好精度”的主要候选，第~\ref{sec:case} 节案例的 BFP8 探索提供了一个具体数据点。
 
 \subsection{编译栈}
 
-FPGA 上的神经网络编译栈大致经历了三代。第一代以数据流生成器为主：FINN~\cite{finn}（FPGA 2017）为二值化网络生成异构流式架构，按用户给定的吞吐需求为每层裁剪计算资源；hls4ml~\cite{hls4ml} 以 HLS 为基础，面向粒子物理触发系统生成超低时延的网络推理电路。这两者都假设权重可以全部常驻片上，适用于小模型。第二代以“解耦的硬件定制”为特征：HeteroFlow~\cite{heteroflow}（FPGA 2022）构建于 HeteroCL 之上，用统一的 \texttt{.to()} 原语描述主机与加速器之间、加速器内 kernel 之间与 kernel 内部三个粒度的数据放置；Allo~\cite{allo}（PLDI 2024）把计算、存储、通信与数据类型四类定制从算法描述中解耦为可组合的原语，并支持类型安全的模块组合。第三代面向大模型，以 FlightLLM 的长度自适应编译~\cite{flightllm} 与 Chen 等的解析模型驱动的空间加速器生成~\cite{chen2024trets} 为代表。
+FPGA 上的神经网络编译栈大致经历了三代。第一代以数据流生成器为主：FINN~\cite{finn}（FPGA 2017）\hw{Xilinx ZC706} 为二值化网络生成异构流式架构，按用户给定的吞吐需求为每层裁剪计算资源；hls4ml~\cite{hls4ml} 以 HLS 为基础，面向粒子物理触发系统生成超低时延的网络推理电路（流程见图~\ref{fig:hls4ml}）\hw{大型强子对撞机触发系统中的 FPGA}。
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.7\textwidth]{figures/hls4ml_flow.jpg}
+\caption{hls4ml 的设计流程：常规机器学习框架训练并压缩的模型经 HLS 转换生成 HLS 工程，调节精度与复用/流水配置后，输出协处理 kernel 或定制固件。\figsrc{hls4ml}}
+\label{fig:hls4ml}
+\end{figure}
+这两者都假设权重可以全部常驻片上，适用于小模型。第二代以“解耦的硬件定制”为特征：HeteroFlow~\cite{heteroflow}（FPGA 2022）构建于 HeteroCL 之上，用统一的 \texttt{.to()} 原语描述主机与加速器之间、加速器内 kernel 之间与 kernel 内部三个粒度的数据放置；Allo~\cite{allo}（PLDI 2024）把计算、存储、通信与数据类型四类定制从算法描述中解耦为可组合的原语，并支持类型安全的模块组合。第三代面向大模型，以 FlightLLM 的长度自适应编译~\cite{flightllm} 与 Chen 等的解析模型驱动的空间加速器生成~\cite{chen2024trets} 为代表。
 
 这些编译栈大多解决的是“如何用高层描述生成高效的空间加速器”。VLA 部署还需要回答另一个问题：“如何把一个固定模型的整次推理调度到一个固定的计算阵列上”，即程序生成而非硬件生成。第~\ref{sec:case} 节案例的 chunk 生成器属于后者。
 
 \subsection{系统先例}
 
-Brainwave~\cite{brainwave} 在数据中心规模上用 FPGA 软处理器做 batch-1 的实时 DNN 服务，借助分布式模型并行把模型固定在多块 FPGA 上；据 IEEE Micro 版本的摘要，它在 Stratix 10 上达到约 39.5~TFLOPs 的 batch-1 有效性能。Groq TSP~\cite{groq} 采用功能切片的微架构与生产者—消费者流式编程模型，去除仲裁器与缓存等反应式硬件，从而保证执行的确定性。二者分别代表了“实时、无批处理”与“确定性”两种机器人闭环同样看重的属性。
+Brainwave~\cite{brainwave} 在数据中心规模上用 FPGA 软处理器做 batch-1 的实时 DNN 服务，借助分布式模型并行把模型固定在多块 FPGA 上；据 IEEE Micro 版本的摘要，它在 Stratix 10 上达到约 39.5~TFLOPs 的 batch-1 有效性能\hw{Intel Stratix 10，数据中心网络直连的多 FPGA}。Groq TSP~\cite{groq} 采用功能切片的微架构与生产者—消费者流式编程模型，去除仲裁器与缓存等反应式硬件，从而保证执行的确定性\hw{Groq TSP 专用芯片}。二者分别代表了“实时、无批处理”与“确定性”两种机器人闭环同样看重的属性。
 
 \subsection{非线性算子的硬件实现}\label{sec:nonlinear}
 
@@ -535,17 +702,20 @@ Brainwave~\cite{brainwave} 在数据中心规模上用 FPGA 软处理器做 batc
 \endhead
 \bottomrule
 \endfoot
-FTRANS~\cite{ftrans} & 专用 Transformer 数据通路 & 块循环矩阵压缩 & 模型缩小至多 16 倍 & — & 对 GPU 能效至多 8.80 倍 \\
+FTRANS~\cite{ftrans} & 专用 Transformer 数据通路 & 块循环矩阵压缩 & 模型缩小至多 16 倍 & HLS（SDx） & VCU118；对 GPU 能效至多 8.80 倍 \\
 DFX~\cite{dfx} & 多 FPGA 模型并行；自定义指令核 & — & 用满 HBM 全部通道；QSFP 环网 & 自定义指令，端到端执行全部算子 & 4$\times$U280；GPT-2；对 4$\times$V100 加速 5.58 倍、能效 3.99 倍 \\
-FlightLLM~\cite{flightllm} & 可配置稀疏 DSP 链 & 混合精度 + 稀疏 & HBM；解码激活常驻片上 & 完整映射流程；长度自适应编译 & U280；LLaMA2-7B，batch 1；对 V100S 能效 6.0 倍、成本效率 1.8 倍 \\
+FlightLLM~\cite{flightllm} & 可配置稀疏 DSP 链 & 混合精度 + 稀疏 & HBM；解码激活常驻片上 & 完整映射流程；长度自适应编译 & U280 与 VHK158；LLaMA2-7B，batch 1；对 V100S 能效 6.0 倍、成本效率 1.8 倍 \\
 Chen 等~\cite{chen2024trets} & 模型专用空间数据流 & — & 尽量减少片外访问 & 解析模型 + 可组合 HLS 库 & U280；预填充对 DFX 2.2 倍；解码对 A100 1.9 倍、能效 5.7 倍 \\
 HLSTransform~\cite{hlstransform} & HLS 流水线 & — & — & HLS & VU9P；Llama 2；每 token 能耗对 3090 低 8.25 倍，速度为 0.53 倍 \\
 EdgeLLM~\cite{edgellm} & 分组脉动阵列；CPU-FPGA 异构 & 注意力 FP16，FFN FP16$\times$INT4 & HBM & 统一数据形状，免重排 & VCU128；LLaMA2-7B 解码 \\
-Auto-ViT-Acc~\cite{autovitacc} & ViT 加速器 & 混合方案量化 & — & 自动化框架 & DeiT-base 帧率约 5.6 倍，精度降 0.71\% \\
+Auto-ViT-Acc~\cite{autovitacc} & ViT 加速器 & 混合方案量化 & — & 自动化框架 & ZCU102，150~MHz；DeiT-base 帧率约 5.6 倍，精度降 0.71\% \\
+TeLLMe~\cite{tellme} & 查表矩阵乘；预填充/解码分离数据流 & 三值权重 + 8 位激活 & URAM 感知的权重编排 & HLS & KV260；解码约 9.51 tokens/s \\
+SpeedLLM~\cite{speedllm} & 数据流并行 + 算子融合 & — & 存储复用 & — & U280；TinyLlama 最高 4.8 倍 \\
 HeatViT~\cite{heatvit} & ViT + token 选择器 & 16 位基线 & — & 自适应 token 剪枝 & ZCU102；3.46 至 4.89 倍 \\
-SpAtten~\cite{spatten} & 专用注意力流水 + top-$k$ 引擎 & 渐进量化 & DRAM 访问平均降 10.0 倍 & 运行时剪枝 & 对 A$^3$ 加速 1.6 倍 \\
+SpAtten~\cite{spatten} & 专用注意力流水 + top-$k$ 引擎 & 渐进量化 & DRAM 访问平均降 10.0 倍 & 运行时剪枝 & ASIC；对 A$^3$ 加速 1.6 倍 \\
 CHARM~\cite{charm} & 多个异构矩阵乘加速器并发 & fp32（AIE） & — & 按层尺寸分配 & VCK190；单体加速器在小层上利用率不足 5\% \\
 SSR~\cite{ssr} & 空间 + 顺序混合 & — & — & 帕累托搜索 & VCK190；对 A10G 吞吐 2.53 倍 \\
+Dadu-Corki~\cite{corki} & 控制端专用硬件 + 流水线解耦 & — & — & 通信与计算重叠 & 控制硬件 ZC706；推理 V100；Franka 机械臂 \\
 Stratix 10 NX~\cite{s10nx_fpt} & 硬核张量块 & INT8/INT4/块浮点 & — & — & 峰值约 143 INT8 TOPS；对常规 DSP FPGA 3.5 倍 \\
 Brainwave~\cite{brainwave} & 精度可调软 NPU & MSFP 块浮点~\cite{msfp} & 多 FPGA 分布式固定模型 & batch-1 实时服务 & Stratix 10；batch-1 有效约 39.5 TFLOPs \\
 \textbf{本文案例} & 35 个自主节点；列并行 MLP72 级联链 + 向量节点 & W8A8 + SmoothQuant；uint8 注意力概率；bf16 向量接口 & 16 路 GDDR6 经二维 NoC；每节点独立接入点 & chunk 生成器；期望内存逐拍核对 & AC7t1500；\pizero{} 整 chunk 1.221~s \tM；Thor bf16 125.3~ms \tM \\
@@ -558,7 +728,7 @@ Brainwave~\cite{brainwave} & 精度可调软 NPU & MSFP 块浮点~\cite{msfp} & 
 
 本文围绕“VLA + FPGA”“扩散策略 + FPGA”“机器人策略 + 加速器”做了多轮检索。截至撰写时，没有检索到已发表的、在单片 FPGA 上端到端运行完整 VLA（VLM 前缀 + 动作头）的工作。需要说明，“未检索到”受检索手段所限（附录~\ref{app:verify}），不等于“不存在”。与之最接近的工作可分为四类。
 
-\textbf{计算流水线的协同设计。} Dadu-Corki~\cite{corki}（ISCA 2025；早期预印本题为 Corki）面向具身智能机械臂操作，把大模型推理、机器人控制与数据通信在计算流水线中解耦：算法上让模型预测近未来的轨迹而非单帧动作，以降低大模型推理频率；硬件上加速从轨迹到关节力矩的转换，并使通信与计算并行。据检索摘要，它报告了最高约 3.6 倍的加速。它的着眼点是“降低大模型被调用的频率 + 加速控制端”，不加速 VLM 本身。
+\textbf{计算流水线的协同设计。} Dadu-Corki~\cite{corki}（ISCA 2025；早期预印本题为 Corki）面向具身智能机械臂操作，把大模型推理、机器人控制与数据通信在计算流水线中解耦：算法上让模型预测近未来的轨迹而非单帧动作，以降低大模型推理频率；硬件上加速从轨迹到关节力矩的转换，并使通信与计算并行。据检索，其控制端硬件在 Xilinx Zynq-7000 ZC706 FPGA 上实现，大模型推理的时延与能耗在 NVIDIA V100 上测量，控制时延与功耗在 Intel i7-13700 CPU 上测量，并通过 Wi-Fi 连接 Franka Emika Panda 机械臂测量通信时延。其早期预印本报告最高约 3.6 倍加速；检索到的较新版本报告推理频率最多降低 5.1 倍、加速最高 5.9 倍、成功率最多提升 13.9\%，不同版本数字不同，引用时应以正式发表版本为准\hw{控制硬件：Xilinx ZC706；推理：NVIDIA V100；CPU：i7-13700；机器人：Franka Panda}。它的着眼点是“降低大模型被调用的频率 + 加速控制端”，不加速 VLM 本身。
 
 \textbf{既有加速器的表征与选型。} 跨加速器的 VLA 表征工作~\cite{xpuvla} 与 VLA-Perf~\cite{vlaperf} 研究的是在既有 GPU、NPU 等平台上如何选型与优化，而不是新硬件（第~\ref{sec:gpu} 节）。
 
@@ -571,6 +741,84 @@ Brainwave~\cite{brainwave} & 精度可调软 NPU & MSFP 块浮点~\cite{msfp} & 
 \textbf{为什么缺少 VLA-on-FPGA 的工作。} 这一空白可能有以下几方面原因。第一，规模：主流 VLA 的参数量在数亿到数十亿之间，远超单片 FPGA 的片上存储，必须依赖外存与复杂的调度，工程难度明显高于把小型卷积网络或小型策略网络放上 FPGA。第二，迭代速度：VLA 模型在一两年内经历了多次结构变化，而 FPGA 的开发周期较长，模型专用的空间加速器很容易在完成时就已过时。第三，评测门槛：VLA 的精度评估需要机器人数据集乃至真实机器人，硬件研究团队不一定具备这样的条件；反过来，机器人团队通常以 GPU 为默认平台。第四，基准缺失：没有公认的 VLA 推理基准，使得硬件工作难以与已有结果对比，也降低了发表的吸引力。这些原因同时也指出了该方向的研究机会：以编译器为中心的可编程阵列可以缓解迭代速度问题，公共基准可以降低评测门槛，而像第~\ref{sec:case} 节案例这样的端到端实现可以提供第一批可对比的数据点。
 
 因此，就“把一个数十亿参数的 VLA 完整映射到单片 FPGA，并以相对 fp32 的动作误差验证”而言，本文可检索的公开文献中存在明显空白。这一空白既为第~\ref{sec:case} 节案例提供了新颖性，也意味着缺少可以直接对标的学术基线；与 Jetson AGX Thor 的对比是目前唯一的外部参照。
+
+
+%======================================================================
+\section{文献所用硬件平台汇总}\label{sec:platforms}
+%======================================================================
+
+硬件平台决定了文献中数字的含义：同一个“加速比”，相对 V100 与相对 A100 意义不同；同一个“时延”，在 A100 上测得与在 Jetson 上测得也不可同日而语。本节把本文讨论过的工作所用的计算平台、对照平台与机器人平台集中列于表~\ref{tab:platforms}，并注明每条信息的出处类型：“摘要”指检索到的摘要级信息；“正文”指检索结果中引用的论文正文；“代码库”指官方代码库或项目页的说明；“图”指本文摘录的原图。未能从可用来源读到的项标为“—”。需要注意三点：第一，代码库中的平台信息反映的是代码库当前版本的推荐配置，可能晚于论文发表时的实验平台（例如 GR00T 代码库当前对应 N1.7 版本）；第二，“解析模型”类工作（如 VLA-Perf）给出的是对某一平台的建模估计，而非在该平台上的实测；第三，训练平台与推理平台往往不同，表中尽量区分。
+
+\begin{small}
+\begin{longtable}{p{2.2cm} p{1.5cm} p{4.6cm} p{3.6cm} p{1.9cm}}
+\caption{本文所讨论工作的硬件平台一览。}\label{tab:platforms}\\
+\toprule
+工作 & 类别 & 计算平台（实验/部署） & 对照平台 / 机器人平台 & 出处类型 \\
+\midrule
+\endfirsthead
+\toprule
+工作 & 类别 & 计算平台（实验/部署） & 对照平台 / 机器人平台 & 出处类型 \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+\multicolumn{5}{l}{\textit{VLA 模型与数据集}} \\
+RT-1~\cite{rt1} & 模型 & 机器人端约 3~Hz 运行 & 真实机器人（型号—） & 摘要 \\
+RT-2~\cite{rt2} & 模型 & 多 TPU 云端服务，经网络查询；55B 约 1--3~Hz，5B 约 5~Hz & 真实机器人 & 正文 \\
+Open X-Embodiment~\cite{oxe} & 数据集 & — & 22 种机器人形态 & 摘要、图 \\
+Octo~\cite{octo} & 模型 & 预训练 TPU；单块 24~GB GPU 微调约 5 小时 & WidowX、UR5、Franka 等 9 种平台 & 论文 PDF \\
+OpenVLA~\cite{openvla} & 模型 & LoRA 微调：A100 80~GB；推理：A100 上 4.2~Hz & — & 代码库、图 \\
+OpenVLA-OFT~\cite{openvlaoft} & 模型/优化 & A100 上 109.7~Hz、0.073~s；单块约 16--18~GB GPU & ALOHA 双臂 & 代码库、图 \\
+\pizero~\cite{pi0} & 模型 & 推理：显存 8~GB 以上（示例 RTX 4090）；全参数微调：A100 80~GB / H100 & 自有平台；ALOHA、DROID 检查点 & 代码库 \\
+\pihalf~\cite{pi05} & 模型 & — & 移动操作机器人 & 摘要 \\
+FAST~\cite{fast} & 分词器 & — & — & — \\
+GR00T N1~\cite{gr00t} & 模型 & 推理：16~GB 以上显存 GPU（RTX 4090、L40、H100、Jetson AGX Thor/Orin、DGX Spark；代码库当前版本） & Fourier GR-1 人形 & 摘要、代码库 \\
+RDT-1B~\cite{rdt} & 模型 & 代码库提示 RTX 4090 级显存不足以加载 T5-XXL 编码器 & ALOHA 双臂 & 代码库 \\
+SmolVLA~\cite{smolvla} & 模型 & 单块消费级 GPU 训练；消费级 GPU/CPU 部署 & SO-100 & 摘要 \\
+Diffusion Policy~\cite{diffpolicy} & 模型 & RTX 3080，DDIM 10 步约 0.1~s & 真实机器人 & 正文 \\
+ACT~\cite{act} & 模型 & — & ALOHA 低成本双臂 & 摘要 \\
+DROID~\cite{droid} & 数据集 & — & Franka Panda、Robotiq 2F-85、Zed 2 / Zed Mini & 摘要、图 \\
+Consistency Policy~\cite{consistencypolicy} & 模型/优化 & 笔记本 GPU & — & 检索 \\
+\multicolumn{5}{l}{\textit{VLA 推理优化与表征}} \\
+VLA-Cache~\cite{vlacache} & 优化 & NVIDIA GPU（CUDA 时延；型号—） & LIBERO、SIMPLER、真实机器人 & 摘要 \\
+DeeR-VLA~\cite{deervla} & 优化 & 评测：8$\times$V100 & CALVIN 仿真 & 代码库 \\
+LightDP~\cite{lightdp} & 优化 & Apple iPhone 13 & — & 检索 \\
+RTC~\cite{rtc} & 执行算法 & 单块 RTX 4090（\pihalf{}） & 双臂机器人；Kinetix 仿真 & 检索、摘要 \\
+VLA-Perf~\cite{vlaperf} & 解析模型 & A100、H100、B100、RTX 4090、Jetson 系列（建模） & — & 代码库、图 \\
+XPU 表征~\cite{xpuvla} & 表征 & i7-11700；RTX 4090、Jetson Thor、AGX Orin；昇腾 310B/310P；Intel B60 Pro & — & 检索 \\
+VLAQuantBench~\cite{vlaquantbench} & 量化评测 & — & LIBERO 等仿真 & 摘要 \\
+\multicolumn{5}{l}{\textit{LLM 基础与量化}} \\
+FlashAttention~\cite{flashattn} & 算子 & NVIDIA A100（图中存储层次数据） & — & 图 \\
+SmoothQuant~\cite{smoothquant} & 量化 & NVIDIA A100 & — & 论文 PDF \\
+AWQ~\cite{awq} & 量化 & TinyChat：RTX 4090、Jetson Orin & — & 代码库 \\
+\multicolumn{5}{l}{\textit{FPGA / ASIC 加速器}} \\
+FTRANS~\cite{ftrans} & FPGA & Xilinx VCU118（Virtex UltraScale+） & CPU、GPU & 正文 \\
+A$^3$~\cite{a3} / ELSA~\cite{elsa} & ASIC & 专用加速器设计 & — & 摘要 \\
+SpAtten~\cite{spatten} & ASIC & 专用加速器设计 & A$^3$、MNNFast、TITAN Xp、Xeon & 摘要 \\
+Auto-ViT-Acc~\cite{autovitacc} & FPGA & Xilinx ZCU102，150~MHz & 32 位浮点 FPGA 基线 & 正文 \\
+HeatViT~\cite{heatvit} & FPGA & Xilinx ZCU102 & 16 位无剪枝基线 & 摘要 \\
+ViTCoD~\cite{vitcod} & ASIC & 专用加速器（模拟器）；剖析：Jetson TX2 & — & 代码库 \\
+DFX~\cite{dfx} & FPGA & 4$\times$Alveo U280（HBM，QSFP 环网） & 4$\times$V100 & 摘要 \\
+FlightLLM~\cite{flightllm} & FPGA & Alveo U280；Versal VHK158 & V100S、A100 & 摘要、正文 \\
+Chen 等~\cite{chen2024trets} & FPGA & Alveo U280 & DFX、A100 & 摘要 \\
+HLSTransform~\cite{hlstransform} & FPGA & Xilinx VU9P & Xeon E5-2686 v4、RTX 3090 & 摘要 \\
+EdgeLLM~\cite{edgellm} & FPGA & Xilinx VCU128（HBM）+ CPU & — & 摘要 \\
+TeLLMe~\cite{tellme} & FPGA & AMD Kria KV260（XCK26），250~MHz & — & 检索 \\
+SpeedLLM~\cite{speedllm} & FPGA & Alveo U280 & TinyLlama 基线 & 摘要 \\
+CHARM~\cite{charm} & FPGA（AIE） & Versal VCK190（代码库亦支持 VCK5000） & — & 摘要、代码库 \\
+SSR~\cite{ssr} & FPGA（AIE） & Versal VCK190 & A10G、ZCU102、U250 & 摘要 \\
+Stratix 10 NX~\cite{s10nx_fpt} & FPGA & Intel Stratix 10 NX & NVIDIA T4、V100 & 摘要 \\
+Brainwave~\cite{brainwave} / MSFP~\cite{msfp} & FPGA & Intel Stratix 10（数据中心直连多 FPGA） & — & 摘要 \\
+Groq TSP~\cite{groq} & ASIC & Groq TSP 芯片 & — & 摘要 \\
+FINN~\cite{finn} & FPGA & Xilinx ZC706（系统功耗低于 25~W） & — & 摘要 \\
+hls4ml~\cite{hls4ml} & FPGA & LHC 触发系统 FPGA & — & 摘要 \\
+Dadu-Corki~\cite{corki} & FPGA + GPU & 控制硬件 ZC706；推理 V100；控制 i7-13700 & Franka Panda（Wi-Fi） & 检索 \\
+MX 机器人硬件~\cite{mxrobot} & ASIC & TSMC 16~nm 综合，500~MHz & Dacapo & 检索 \\
+\textbf{本文案例} & FPGA & Achronix Speedster7t AC7t1500（VP815，PCIe Gen4 x16，16$\times$2~GB GDDR6） & Jetson AGX Thor（bf16）；DROID 录制帧 & 简报 \\
+\end{longtable}
+\end{small}
+
+从表~\ref{tab:platforms} 可以看出三个现象。其一，VLA 算法工作的推理平台高度集中于 NVIDIA 数据中心与桌面 GPU（A100、RTX 4090 等），真正在机器人端侧平台（Jetson 系列）上报告实测的工作很少；VLA-Perf 对 Jetson Thor 的结果是解析估计。其二，FPGA 上的 LLM 工作以数据中心板卡（U280、VCU128、VCK190）为主，边缘 FPGA（KV260、ZCU102、ZC706）上的工作多针对小模型或 ViT；在机器人整机功耗约束下运行数十亿参数模型的 FPGA 实测几乎空白。其三，对照平台五花八门（V100、V100S、A10G、A100、RTX 3090、T4），这再次说明第~\ref{sec:eval} 节公平比较清单的必要性。
 
 %======================================================================
 \section{方法论分析：VLA 映射到 FPGA 的难点与机会}\label{sec:method}
@@ -969,7 +1217,9 @@ A3 & 异步执行 & 算法/系统 & 放宽时延约束~\cite{rtc} & 低 & 任务
 \section{文献核实状态说明}\label{app:verify}
 %======================================================================
 
-本文撰写环境的网络策略拒绝访问 api.crossref.org、doi.org、dl.acm.org、ieeexplore.ieee.org、proceedings.mlr.press、www.roboticsproceedings.org、openreview.net、arxiv.org 与 dblp.org，仅通用网页检索可用。按本文采用的核实规则，一条文献只有在能通过 DOI（经 api.crossref.org 查询）或会议/期刊官方目录页核实时才标为“已核实”。因此，参考文献列表中\textbf{全部条目均为“未核实”}，每条的 \texttt{note} 字段记录了检索佐证链接或 DOI。标题与出处以检索结果中官方页面的标题为准；作者只列检索结果中直接出现者，其余以“others”或机构名代替；页码只在检索结果中的官方页面给出时列出。建议在网络许可后逐条以 DOI 复核后再正式投稿。
+本文撰写环境的网络策略拒绝访问 api.crossref.org、doi.org、dl.acm.org、ieeexplore.ieee.org、proceedings.mlr.press、www.roboticsproceedings.org、openreview.net、arxiv.org 与 dblp.org，仅通用网页检索可用。按本文采用的核实规则，一条文献只有在能通过 DOI（经 api.crossref.org 查询）或会议/期刊官方目录页核实时才标为“已核实”。因此，参考文献列表中\textbf{全部条目均为“未核实”}，每条的 \texttt{note} 字段记录了检索佐证链接或 DOI。标题与出处以检索结果中官方页面的标题为准；作者只列检索结果中直接出现者，其余以“others”或机构名代替；页码只在检索结果中的官方页面给出时列出。建议在网络许可后逐条以 DOI 复核后再正式投稿。部分条目（Octo、OpenVLA-OFT、RDT-1B、DeeR-VLA、ViTCoD、SSR）的作者列表取自其官方代码库 README 中的引用信息、论文 PDF 首页或作者主页。
+
+\textbf{摘录图片与平台信息的来源。} 本文的摘录图片取自所引文献的官方代码库或项目页（经 git 获取），每幅图的原始路径与所在仓库的许可证记录在 \texttt{figures/SOURCES.md} 中；图片仅做了缩放与透明背景填白，未改动内容。其中 DROID、OpenVLA-OFT、VLA-Cache 与 Octo 项目页的仓库没有许可证文件，正式发表前应确认转载许可。第~\ref{sec:platforms} 节平台表中标为“代码库”的信息来自同一批官方代码库的 README，标为“论文 PDF”的信息来自作者主页托管的论文或报告文件，标为“正文”“检索”的信息来自网页检索结果对论文正文的引述。
 
 文中来自厂商的资料（NVIDIA Jetson Thor~\cite{thor}、Achronix Speedster7t~\cite{achronix}）属于非同行评审来源，仅用于器件规格。
 
